@@ -46,16 +46,19 @@ public class ClientStdio {
 
 		client.initialize();
 
-		// List and demonstrate tools
+		// 列出可用工具
 		ListToolsResult toolsList = client.listTools();
-		System.out.println("Available Tools = " + toolsList);
+		System.out.println("可用工具 = " + toolsList);
 
-		CallToolResult weatherForcastResult = client.callTool(new CallToolRequest("getWeatherForecastByLocation",
-				Map.of("latitude", "47.6062", "longitude", "-122.3321")));
-		System.out.println("Weather Forcast: " + weatherForcastResult);
+		// 测试天气查询
+		CallToolResult weatherResult = client.callTool(
+			new CallToolRequest("get_weather", Map.of("city", "北京")));
+		System.out.println("天气查询结果: " + weatherResult);
 
-		CallToolResult alertResult = client.callTool(new CallToolRequest("getAlerts", Map.of("state", "NY")));
-		System.out.println("Alert Response = " + alertResult);
+		// 测试天气预警
+		CallToolResult alertResult = client.callTool(
+			new CallToolRequest("get_weather_warning", Map.of("city", "上海")));
+		System.out.println("预警查询结果 = " + alertResult);
 
 		client.closeGracefully();
 	}

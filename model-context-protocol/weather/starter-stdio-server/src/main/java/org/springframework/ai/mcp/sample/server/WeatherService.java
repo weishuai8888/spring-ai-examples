@@ -15,132 +15,218 @@
 */
 package org.springframework.ai.mcp.sample.server;
 
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.swagger.v3.oas.annotations.Parameter;
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.GZIPInputStream;
 
 @Service
 public class WeatherService {
 
-	private static final String BASE_URL = "https://api.weather.gov";
-
+	private static final String API_KEY = "去和风天气网站拿密钥"; // 替换为你的和风天气API密钥
+	private static final String BASE_URL = "https://api.qweather.com/v7";
 	private final RestClient restClient;
+	private final ObjectMapper objectMapper;
 
 	public WeatherService() {
-
 		this.restClient = RestClient.builder()
 			.baseUrl(BASE_URL)
-			.defaultHeader("Accept", "application/geo+json")
-			.defaultHeader("User-Agent", "WeatherApiClient/1.0 (your@email.com)")
+			.defaultHeader("Accept", "application/json")
 			.build();
+		this.objectMapper = new ObjectMapper();
 	}
 
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Points(@JsonProperty("properties") Props properties) {
-		@JsonIgnoreProperties(ignoreUnknown = true)
-		public record Props(@JsonProperty("forecast") String forecast) {
+	/**
+	 * 获取城市ID
+	 */
+	private String getLocationId(String cityName) {
+		try {
+//			String encodedCity = URLEncoder.encode(cityName, StandardCharsets.UTF_8);
+			byte[] responseBytes = restClient.get()
+				.uri("https://geoapi.qweather.com/v2/city/lookup?key={key}&location={city}", 
+					API_KEY, cityName)
+				.header("Accept-Charset", "UTF-8")
+				.header("Content-Type", "application/json;charset=UTF-8")
+				.retrieve()
+				.toEntity(byte[].class)
+				.getBody();
+
+			byte[] decompressedData = WeatherService.decompress(responseBytes);
+			String response = new String(decompressedData, "UTF-8");
+
+			JsonNode root = objectMapper.readTree(response);
+			if ("200".equals(root.path("code").asText())) {
+				return root.path("location")
+					.path(0)
+					.path("id")
+					.asText();
+			}
+		} catch (Exception e) {
+			// 记录错误但继续执行
 		}
+		return null;
 	}
 
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Forecast(@JsonProperty("properties") Props properties) {
-		@JsonIgnoreProperties(ignoreUnknown = true)
-		public record Props(@JsonProperty("periods") List<Period> periods) {
+	public static byte[] decompress(byte[] compressedData) throws IOException {
+		ByteArrayInputStream bis = new ByteArrayInputStream(compressedData);
+		GZIPInputStream gzipInputStream = new GZIPInputStream(bis);
+		ByteArrayOutputStream bos = new ByteArrayOutputStream();
+		byte[] buffer = new byte[1024];
+		int len;
+		while ((len = gzipInputStream.read(buffer))  > 0) {
+			bos.write(buffer,  0, len);
 		}
-
-		@JsonIgnoreProperties(ignoreUnknown = true)
-		public record Period(@JsonProperty("number") Integer number, @JsonProperty("name") String name,
-				@JsonProperty("startTime") String startTime, @JsonProperty("endTime") String endTime,
-				@JsonProperty("isDaytime") Boolean isDayTime, @JsonProperty("temperature") Integer temperature,
-				@JsonProperty("temperatureUnit") String temperatureUnit,
-				@JsonProperty("temperatureTrend") String temperatureTrend,
-				@JsonProperty("probabilityOfPrecipitation") Map probabilityOfPrecipitation,
-				@JsonProperty("windSpeed") String windSpeed, @JsonProperty("windDirection") String windDirection,
-				@JsonProperty("icon") String icon, @JsonProperty("shortForecast") String shortForecast,
-				@JsonProperty("detailedForecast") String detailedForecast) {
-		}
+		gzipInputStream.close();
+		bos.close();
+		return bos.toByteArray();
 	}
 
-	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Alert(@JsonProperty("features") List<Feature> features) {
-
-		@JsonIgnoreProperties(ignoreUnknown = true)
-		public record Feature(@JsonProperty("properties") Properties properties) {
+	/**
+	 * 获取中国城市天气预报
+	 */
+	@Tool(name = "get_weather",
+		  description = "获取中国城市的实时天气信息。输入城市名称，如：北京、上海、广州等")
+	public String getWeatherForecastByLocation(
+			@Parameter(name = "city",
+					  description = "中国城市名称，如：北京、上海、广州等") 
+			String city) {
+		
+		if (city == null || city.trim().isEmpty()) {
+			return "请输入有效的城市名称";
 		}
 
-		@JsonIgnoreProperties(ignoreUnknown = true)
-		public record Properties(@JsonProperty("event") String event, @JsonProperty("areaDesc") String areaDesc,
-				@JsonProperty("severity") String severity, @JsonProperty("description") String description,
-				@JsonProperty("instruction") String instruction) {
+		try {
+			String locationId = getLocationId(city.trim());
+			if (locationId == null) {
+				return String.format("找不到城市\"%s\"的天气信息，请确保输入正确的中国城市名称", city);
+			}
+
+			byte[] responseBytes = restClient.get()
+				.uri("/weather/now?key={key}&location={id}", API_KEY, locationId)
+				.header("Accept-Charset", "UTF-8")
+				.header("Content-Type", "application/json;charset=UTF-8")
+				.retrieve()
+				.toEntity(byte[].class)
+				.getBody();
+
+			byte[] decompressedData = WeatherService.decompress(responseBytes);
+			String response = new String(decompressedData, "UTF-8");
+
+			JsonNode root = objectMapper.readTree(response);
+			if ("200".equals(root.path("code").asText())) {
+				JsonNode now = root.path("now");
+				return String.format("""
+					%s实时天气：
+					• 天气：%s
+					• 温度：%s°C
+					• 体感温度：%s°C
+					• 相对湿度：%s%%
+					• %s %s级
+					• 更新时间：%s
+					""",
+					city,
+					now.path("text").asText(),
+					now.path("temp").asText(),
+					now.path("feelsLike").asText(),
+					now.path("humidity").asText(),
+					now.path("windDir").asText(),
+					now.path("windScale").asText(),
+					now.path("obsTime").asText()
+				);
+			}
+			return "获取天气信息失败，请稍后重试";
+		} catch (Exception e) {
+			return String.format("获取天气信息时发生错误：%s", e.getMessage());
 		}
 	}
 
 	/**
-	 * Get forecast for a specific latitude/longitude
-	 * @param latitude Latitude
-	 * @param longitude Longitude
-	 * @return The forecast for the given location
-	 * @throws RestClientException if the request fails
+	 * 获取中国城市天气预警
 	 */
-	@Tool(description = "Get weather forecast for a specific latitude/longitude")
-	public String getWeatherForecastByLocation(double latitude, double longitude) {
+	@Tool(name = "get_weather_warning",
+		  description = "获取中国城市的天气预警信息。输入城市名称，如：北京、上海、广州等")
+	public String getAlerts(
+			@Parameter(name = "city", 
+					  description = "中国城市名称，如：北京、上海、广州等") 
+			String city) {
+		
+		if (city == null || city.trim().isEmpty()) {
+			return "请输入有效的城市名称";
+		}
 
-		var points = restClient.get()
-			.uri("/points/{latitude},{longitude}", latitude, longitude)
-			.retrieve()
-			.body(Points.class);
+		try {
+			String locationId = getLocationId(city.trim());
+			if (locationId == null) {
+				return String.format("找不到城市\"%s\"的天气预警信息，请确保输入正确的中国城市名称", city);
+			}
 
-		var forecast = restClient.get().uri(points.properties().forecast()).retrieve().body(Forecast.class);
+			byte[] responseBytes = restClient.get()
+				.uri("/warning/now?key={key}&location={id}", API_KEY, locationId)
+				.header("Accept-Charset", "UTF-8")
+				.header("Content-Type", "application/json;charset=UTF-8")
+				.retrieve()
+				.toEntity(byte[].class)
+				.getBody();
 
-		String forecastText = forecast.properties().periods().stream().map(p -> {
-			return String.format("""
-					%s:
-					Temperature: %s %s
-					Wind: %s %s
-					Forecast: %s
-					""", p.name(), p.temperature(), p.temperatureUnit(), p.windSpeed(), p.windDirection(),
-					p.detailedForecast());
-		}).collect(Collectors.joining());
+			byte[] decompressedData = WeatherService.decompress(responseBytes);
+			String response = new String(decompressedData, "UTF-8");
 
-		return forecastText;
+			JsonNode root = objectMapper.readTree(response);
+			if ("200".equals(root.path("code").asText())) {
+				JsonNode warning = root.path("warning");
+				if (warning.isArray() && warning.size() > 0) {
+					StringBuilder warnings = new StringBuilder();
+					warnings.append(String.format("%s天气预警信息：\n", city));
+					for (JsonNode alert : warning) {
+						warnings.append(String.format("""
+							• 预警类型：%s
+							• 预警级别：%s
+							• 预警详情：%s
+							• 发布时间：%s
+							
+							""",
+							alert.path("typeName").asText(),
+							alert.path("level").asText(),
+							alert.path("text").asText(),
+							alert.path("pubTime").asText()
+						));
+					}
+					return warnings.toString();
+				}
+				return String.format("%s目前无天气预警信息", city);
+			}
+			return "获取天气预警信息失败，请稍后重试";
+		} catch (Exception e) {
+			return String.format("获取天气预警信息时发生错误：%s", e.getMessage());
+		}
 	}
 
 	/**
-	 * Get alerts for a specific area
-	 * @param state Area code. Two-letter US state code (e.g. CA, NY)
-	 * @return Human readable alert information
-	 * @throws RestClientException if the request fails
+	 * 用于本地测试的 main 方法
 	 */
-	@Tool(description = "Get weather alerts for a US state. Input is Two-letter US state code (e.g. CA, NY)")
-	public String getAlerts(@ToolParam( description =  "Two-letter US state code (e.g. CA, NY") String state) {
-		Alert alert = restClient.get().uri("/alerts/active/area/{state}", state).retrieve().body(Alert.class);
-
-		return alert.features()
-			.stream()
-			.map(f -> String.format("""
-					Event: %s
-					Area: %s
-					Severity: %s
-					Description: %s
-					Instructions: %s
-					""", f.properties().event(), f.properties.areaDesc(), f.properties.severity(),
-					f.properties.description(), f.properties.instruction()))
-			.collect(Collectors.joining("\n"));
-	}
-
 	public static void main(String[] args) {
-		WeatherService client = new WeatherService();
-		System.out.println(client.getWeatherForecastByLocation(47.6062, -122.3321));
-		System.out.println(client.getAlerts("NY"));
-	}
+		WeatherService weatherService = new WeatherService();
+		
+		// 测试获取天气信息
+		System.out.println("=== 测试天气查询 ===");
+		System.out.println(weatherService.getWeatherForecastByLocation("济南"));
 
+		// 测试获取天气预警
+		System.out.println("\n=== 测试天气预警 ===");
+		System.out.println(weatherService.getAlerts("济南"));
+
+		// 测试错误情况
+		System.out.println("\n=== 测试错误处理 ===");
+		System.out.println(weatherService.getWeatherForecastByLocation(""));  // 空输入
+		System.out.println(weatherService.getWeatherForecastByLocation("111"));  // 无效城市名
+	}
 }
