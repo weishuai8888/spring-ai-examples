@@ -6,6 +6,9 @@ import java.util.Scanner;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.InMemoryChatMemory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.boot.CommandLineRunner;
@@ -36,10 +39,13 @@ public class Application {
 			try (Scanner scanner = new Scanner(System.in)) {
 				while (true) {
 					System.out.print("\nUSER: ");
-					System.out.println("\nASSISTANT: " +
-							chatClient.prompt(scanner.nextLine()) // Get the user input
-									.call()
-									.content());
+					String str = scanner.nextLine();
+					ChatClient.CallResponseSpec call = chatClient.prompt(str).call();
+					ChatResponse chatResponse = call.chatResponse();
+					Generation result = chatResponse.getResult();
+					AssistantMessage output = result.getOutput();
+					String text = output.getText();
+					System.out.println("\nASSISTANT: " + text);
 				}
 			}
 
